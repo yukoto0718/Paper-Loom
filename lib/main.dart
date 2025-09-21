@@ -1,7 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'screens/pdf_reader_screen.dart';
 import 'services/pdf_service.dart';
+import 'services/book_shelf_service.dart';
 import 'models/pdf_document.dart';
+import 'widgets/pdf_book_card.dart';
+import 'widgets/empty_shelf_widget.dart';
 
 void main() {
   runApp(const PaperLoomApp());
@@ -65,7 +69,7 @@ class PaperLoomApp extends StatelessWidget {
         ),
       ),
       themeMode: ThemeMode.system,
-      home: const HomeScreen(),
+      home: const BookShelfScreen(),
       onGenerateRoute: (settings) {
         switch (settings.name) {
           case '/pdf-reader':
@@ -81,59 +85,50 @@ class PaperLoomApp extends StatelessWidget {
   }
 }
 
-class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
+class BookShelfScreen extends StatefulWidget {
+  const BookShelfScreen({super.key});
 
   @override
-  State<HomeScreen> createState() => _HomeScreenState();
+  State<BookShelfScreen> createState() => _BookShelfScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
-  List<PDFDocument> _recentFiles = [];
+class _BookShelfScreenState extends State<BookShelfScreen> {
+  late BookShelfService _bookShelfService;
+  final TextEditingController _searchController = TextEditingController();
   bool _isLoading = false;
 
   @override
   void initState() {
     super.initState();
-    _loadRecentFiles();
+    _bookShelfService = BookShelfService();
+    _initializeBookShelf();
   }
 
-  /// 加载最近文件
-  Future<void> _loadRecentFiles() async {
-    try {
-      final recentFiles = await PDFService.getRecentFiles();
-      if (mounted) {
-        setState(() {
-          _recentFiles = recentFiles;
-        });
-      }
-    } catch (e) {
-      if (mounted) {
-        _showSnackBar('加载最近文件失败: $e');
-      }
-    }
+  @override
+  void dispose() {
+    _bookShelfService.dispose();
+    _searchController.dispose();
+    super.dispose();
   }
 
-  /// 选择并打开PDF文件
-  Future<void> _pickAndOpenPDFFile() async {
-    setState(() {
-      _isLoading = true;
-    });
+  /// 初始化书架
+  Future<void> _initializeBookShelf() async {
+    await _bookShelfService.initialize();
+  }
+
+  /// 添加PDF文件
+  Future<void> _addPDFFile() async {
+    setState(() => _isLoading = true);
 
     try {
       final filePath = await PDFService.pickPDFFile();
       
       if (filePath != null) {
         final document = await PDFService.createPDFDocument(filePath);
+        await _bookShelfService.addDocument(document);
         
         if (mounted) {
-          Navigator.pushNamed(
-            context,
-            '/pdf-reader',
-            arguments: document,
-          ).then((_) {
-            _loadRecentFiles();
-          });
+          _showSnackBar('PDF文件添加成功');
         }
       }
     } on PDFServiceException catch (e) {
@@ -142,25 +137,22 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     } catch (e) {
       if (mounted) {
-        _showSnackBar('打开文件失败: $e');
+        _showSnackBar('添加文件失败: $e');
       }
     } finally {
       if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
+        setState(() => _isLoading = false);
       }
     }
   }
 
-  /// 打开最近文件
-  Future<void> _openRecentFile(PDFDocument document) async {
+  /// 打开PDF文档
+  Future<void> _openDocument(PDFDocument document) async {
     try {
       // 检查文件是否仍然存在
       if (!await PDFService.isValidPDFFile(document.filePath)) {
         _showSnackBar('文件不存在或已损坏');
-        await PDFService.removeFromRecentFiles(document.filePath);
-        _loadRecentFiles();
+        await _bookShelfService.deleteDocument(document);
         return;
       }
 
@@ -170,7 +162,8 @@ class _HomeScreenState extends State<HomeScreen> {
           '/pdf-reader',
           arguments: document,
         ).then((_) {
-          _loadRecentFiles();
+          // 返回时刷新书架
+          _bookShelfService.refresh();
         });
       }
     } catch (e) {
@@ -180,153 +173,102 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.auto_stories, size: 28),
-            SizedBox(width: 8),
-            Text(
-              'Paper Loom',
-              style: TextStyle(
-                fontWeight: FontWeight.bold,
-                fontSize: 22,
-              ),
+  /// 长按文档处理
+  void _onDocumentLongPress(PDFDocument document) {
+    HapticFeedback.mediumImpact();
+    
+    if (_bookShelfService.isMultiSelectMode) {
+      _bookShelfService.toggleDocumentSelection(document);
+    } else {
+      _showDeleteConfirmDialog(document);
+    }
+  }
+
+  /// 显示删除确认对话框
+  void _showDeleteConfirmDialog(PDFDocument document) {
+    showDialog<void>(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('删除确认'),
+          content: Text('确定要删除《${document.fileName}》吗？'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () async {
+                Navigator.of(context).pop();
+                await _deleteDocument(document);
+              },
+              child: const Text('删除'),
             ),
           ],
-        ),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.search),
-            onPressed: () {
-              // TODO: 实现搜索功能
-            },
-          ),
-          IconButton(
-            icon: const Icon(Icons.more_vert),
-            onPressed: () {
-              // TODO: 实现设置菜单
-            },
-          ),
-        ],
-      ),
-      body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(24.0),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              // 欢迎图标
-              Container(
-                padding: const EdgeInsets.all(24),
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.primaryContainer,
-                  shape: BoxShape.circle,
-                ),
-                child: Icon(
-                  Icons.picture_as_pdf,
-                  size: 64,
-                  color: Theme.of(context).colorScheme.onPrimaryContainer,
-                ),
-              ),
-              const SizedBox(height: 32),
-              
-              // 欢迎文本
-              Text(
-                '欢迎使用 Paper Loom',
-                style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                  fontWeight: FontWeight.bold,
-                ),
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 8),
-              Text(
-                '您的专业PDF阅读器',
-                style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
-                ),
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 48),
-              
-              // 操作按钮
-              Column(
-                children: [
-                  SizedBox(
-                    width: double.infinity,
-                    child: FilledButton.icon(
-                      onPressed: _isLoading ? null : _pickAndOpenPDFFile,
-                      icon: _isLoading 
-                          ? const SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : const Icon(Icons.folder_open),
-                      label: Text(_isLoading ? '正在加载...' : '打开PDF文件'),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  SizedBox(
-                    width: double.infinity,
-                    child: OutlinedButton.icon(
-                      onPressed: _recentFiles.isNotEmpty ? _showRecentFiles : null,
-                      icon: const Icon(Icons.history),
-                      label: Text('最近阅读 (${_recentFiles.length})'),
-                    ),
-                  ),
-                ],
-              ),
-              
-              // 最近文件列表
-              if (_recentFiles.isNotEmpty) ...[
-                const SizedBox(height: 32),
-                _buildRecentFilesList(),
-              ],
-              
-              const SizedBox(height: 32),
-              
-              // 功能介绍卡片
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        '主要功能',
-                        style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      const _FeatureItem(
-                        icon: Icons.zoom_in,
-                        title: '缩放查看',
-                        description: '支持手势缩放和精确查看',
-                      ),
-                      const _FeatureItem(
-                        icon: Icons.bookmark,
-                        title: '书签管理',
-                        description: '添加和管理阅读书签',
-                      ),
-                      const _FeatureItem(
-                        icon: Icons.dark_mode,
-                        title: '夜间模式',
-                        description: '保护眼睛的暗色主题',
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
+        );
+      },
     );
+  }
+
+  /// 删除单个文档
+  Future<void> _deleteDocument(PDFDocument document) async {
+    try {
+      await _bookShelfService.deleteDocument(document);
+      _showSnackBar('文件删除成功');
+    } catch (e) {
+      _showSnackBar('删除文件失败: $e');
+    }
+  }
+
+  /// 显示批量删除确认对话框
+  void _showBatchDeleteConfirmDialog() {
+    final selectedCount = _bookShelfService.selectedCount;
+    if (selectedCount == 0) return;
+
+    showDialog<void>(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('批量删除确认'),
+          content: Text('确定要删除选中的$selectedCount个文件吗？'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () async {
+                Navigator.of(context).pop();
+                await _batchDeleteDocuments();
+              },
+              child: const Text('删除'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  /// 批量删除文档
+  Future<void> _batchDeleteDocuments() async {
+    try {
+      final selectedCount = _bookShelfService.selectedCount;
+      await _bookShelfService.deleteSelectedDocuments();
+      _showSnackBar('已删除$selectedCount个文件');
+    } catch (e) {
+      _showSnackBar('批量删除失败: $e');
+    }
+  }
+
+  /// 搜索文档
+  void _onSearchChanged(String query) {
+    _bookShelfService.setSearchQuery(query);
+  }
+
+  /// 清除搜索
+  void _clearSearch() {
+    _searchController.clear();
+    _bookShelfService.clearSearch();
   }
 
   void _showSnackBar(String message) {
@@ -338,214 +280,239 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  /// 构建最近文件列表
-  Widget _buildRecentFilesList() {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: _bookShelfService,
+      builder: (context, child) {
+        return Scaffold(
+          body: SafeArea(
+            child: Column(
               children: [
-                const Icon(Icons.history, size: 20),
-                const SizedBox(width: 8),
-                Text(
-                  '最近阅读',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                const Spacer(),
-                TextButton(
-                  onPressed: _showRecentFiles,
-                  child: const Text('查看全部'),
+                // 顶部功能栏
+                _buildTopBar(),
+                
+                // 主体内容
+                Expanded(
+                  child: _buildBody(),
                 ),
               ],
             ),
-            const SizedBox(height: 12),
-            ...(_recentFiles.take(3).map((document) => _buildRecentFileItem(document))),
-          ],
-        ),
-      ),
+          ),
+          
+          // 多选模式底部栏
+          bottomNavigationBar: _bookShelfService.isMultiSelectMode
+              ? _buildMultiSelectBottomBar()
+              : null,
+        );
+      },
     );
   }
 
-  /// 构建最近文件条目
-  Widget _buildRecentFileItem(PDFDocument document) {
-    return InkWell(
-      onTap: () => _openRecentFile(document),
-      borderRadius: BorderRadius.circular(8),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 8),
-        child: Row(
-          children: [
-            Container(
-              width: 40,
-              height: 40,
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.primaryContainer,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Icon(
-                Icons.picture_as_pdf,
-                color: Theme.of(context).colorScheme.onPrimaryContainer,
-                size: 20,
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    document.fileName,
-                    style: const TextStyle(fontWeight: FontWeight.w500),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  const SizedBox(height: 2),
-                  Row(
-                    children: [
-                      Text(
-                        '第${document.currentPage}页',
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: Theme.of(context).colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Container(
-                        width: 4,
-                        height: 4,
-                        decoration: BoxDecoration(
-                          color: Theme.of(context).colorScheme.onSurfaceVariant,
-                          shape: BoxShape.circle,
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-            Text(
-                        document.progressPercentage,
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: Theme.of(context).colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-            if (document.isFavorite)
-              Icon(
-                Icons.favorite,
-                color: Colors.red[300],
-                size: 16,
-            ),
-          ],
+  /// 构建顶部功能栏
+  Widget _buildTopBar() {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: colorScheme.surface,
+        border: Border(
+          bottom: BorderSide(
+            color: colorScheme.outlineVariant,
+            width: 0.5,
+          ),
         ),
       ),
-    );
-  }
-
-  /// 显示最近文件对话框
-  void _showRecentFiles() {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      builder: (context) => DraggableScrollableSheet(
-        initialChildSize: 0.7,
-        maxChildSize: 0.9,
-        minChildSize: 0.5,
-        builder: (context, scrollController) => Container(
-          padding: const EdgeInsets.all(16),
-          child: Column(
+      child: Column(
+        children: [
+          // 应用标题栏
+          Row(
             children: [
-              Row(
-                children: [
-                  Text(
-                    '最近阅读',
-                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const Spacer(),
-                  IconButton(
-                    onPressed: () => Navigator.pop(context),
-                    icon: const Icon(Icons.close),
-                  ),
-                ],
+              Icon(
+                Icons.auto_stories,
+                size: 28,
+                color: colorScheme.primary,
               ),
-              const SizedBox(height: 16),
-              Expanded(
-                child: _recentFiles.isEmpty
-                    ? Center(
-                        child: Text(
-                          '暂无最近阅读的文件',
-                          style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                            color: Theme.of(context).colorScheme.onSurfaceVariant,
-                          ),
-                        ),
+              const SizedBox(width: 8),
+              Text(
+                'Paper Loom',
+                style: theme.textTheme.headlineSmall?.copyWith(
+                  fontWeight: FontWeight.bold,
+                  color: colorScheme.primary,
+                ),
+              ),
+              const Spacer(),
+              
+              // 多选按钮
+              if (_bookShelfService.hasDocuments)
+                IconButton(
+                  onPressed: () {
+                    if (_bookShelfService.isMultiSelectMode) {
+                      _bookShelfService.exitMultiSelectMode();
+                    } else {
+                      _bookShelfService.enterMultiSelectMode();
+                    }
+                  },
+                  icon: Icon(
+                    _bookShelfService.isMultiSelectMode
+                        ? Icons.close
+                        : Icons.checklist,
+                  ),
+                  tooltip: _bookShelfService.isMultiSelectMode ? '退出多选' : '多选模式',
+                ),
+              
+              // 刷新按钮
+              IconButton(
+                onPressed: _bookShelfService.refresh,
+                icon: const Icon(Icons.refresh),
+                tooltip: '刷新',
+              ),
+              
+              // 添加按钮
+              IconButton(
+                onPressed: _isLoading ? null : _addPDFFile,
+                icon: _isLoading
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
                       )
-                    : ListView.builder(
-                        controller: scrollController,
-                        itemCount: _recentFiles.length,
-                        itemBuilder: (context, index) {
-                          final document = _recentFiles[index];
-                          return _buildRecentFileItem(document);
-                        },
-                      ),
+                    : const Icon(Icons.add_circle_outline),
+                tooltip: '添加PDF',
               ),
             ],
           ),
-        ),
+          
+          // 搜索栏
+          if (_bookShelfService.hasDocuments) ...[
+            const SizedBox(height: 12),
+            TextField(
+              controller: _searchController,
+              onChanged: _onSearchChanged,
+              decoration: InputDecoration(
+                hintText: '搜索PDF文件...',
+                prefixIcon: const Icon(Icons.search),
+                suffixIcon: _bookShelfService.searchQuery.isNotEmpty
+                    ? IconButton(
+                        onPressed: _clearSearch,
+                        icon: const Icon(Icons.clear),
+                      )
+                    : null,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(24),
+                  borderSide: BorderSide.none,
+                ),
+                filled: true,
+                fillColor: colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 20,
+                  vertical: 12,
+                ),
+              ),
+            ),
+          ],
+        ],
       ),
     );
   }
 
-}
+  /// 构建主体内容
+  Widget _buildBody() {
+    if (_bookShelfService.isLoading) {
+      return const Center(
+        child: CircularProgressIndicator(),
+      );
+    }
 
-class _FeatureItem extends StatelessWidget {
-  final IconData icon;
-  final String title;
-  final String description;
+    final filteredDocuments = _bookShelfService.filteredDocuments;
 
-  const _FeatureItem({
-    required this.icon,
-    required this.title,
-    required this.description,
-  });
+    // 空状态
+    if (!_bookShelfService.hasDocuments) {
+      return EmptyShelfWidget(
+        onAddPressed: _addPDFFile,
+      );
+    }
 
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Row(
-        children: [
-          Icon(
-            icon,
-            size: 20,
-            color: Theme.of(context).colorScheme.primary,
+    // 搜索结果为空
+    if (filteredDocuments.isEmpty && _bookShelfService.searchQuery.isNotEmpty) {
+      return EmptySearchResultWidget(
+        searchQuery: _bookShelfService.searchQuery,
+        onClearSearch: _clearSearch,
+      );
+    }
+
+    // PDF书本网格
+    return PDFBookGrid(
+      documents: filteredDocuments,
+      isMultiSelectMode: _bookShelfService.isMultiSelectMode,
+      selectedDocuments: _bookShelfService.selectedDocuments,
+      onDocumentTap: _openDocument,
+      onDocumentLongPress: _onDocumentLongPress,
+      onToggleSelection: _bookShelfService.toggleDocumentSelection,
+      onToggleFavorite: _bookShelfService.toggleFavorite,
+    );
+  }
+
+  /// 构建多选模式底部栏
+  Widget _buildMultiSelectBottomBar() {
+    final selectedCount = _bookShelfService.selectedCount;
+    final totalCount = _bookShelfService.filteredDocuments.length;
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      decoration: BoxDecoration(
+        color: colorScheme.surface,
+        border: Border(
+          top: BorderSide(
+            color: colorScheme.outlineVariant,
+            width: 0.5,
           ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-                Text(
-                  description,
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ],
+        ),
+      ),
+      child: SafeArea(
+        child: Row(
+          children: [
+            // 全选/取消全选
+            TextButton.icon(
+              onPressed: _bookShelfService.toggleSelectAll,
+              icon: Icon(
+                selectedCount == totalCount
+                    ? Icons.deselect
+                    : Icons.select_all,
+              ),
+              label: Text(
+                selectedCount == totalCount ? '取消全选' : '全选',
+              ),
             ),
-          ),
-        ],
+            
+            const Spacer(),
+            
+            // 选中数量
+            Text(
+              '已选择 $selectedCount 项',
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: colorScheme.onSurfaceVariant,
+              ),
+            ),
+            
+            const SizedBox(width: 16),
+            
+            // 删除按钮
+            FilledButton.icon(
+              onPressed: selectedCount > 0 ? _showBatchDeleteConfirmDialog : null,
+              icon: const Icon(Icons.delete_outline),
+              label: const Text('删除'),
+              style: FilledButton.styleFrom(
+                backgroundColor: colorScheme.error,
+                foregroundColor: colorScheme.onError,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
