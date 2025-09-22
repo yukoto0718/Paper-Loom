@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'screens/pdf_reader_screen.dart';
 import 'services/pdf_service.dart';
 import 'services/book_shelf_service.dart';
+import 'services/permission_service.dart';
 import 'models/pdf_document.dart';
 import 'widgets/pdf_book_card.dart';
 import 'widgets/empty_shelf_widget.dart';
@@ -121,6 +122,24 @@ class _BookShelfScreenState extends State<BookShelfScreen> {
     setState(() => _isLoading = true);
 
     try {
+      // 检查并请求权限
+      final permissionStatus = await PermissionService.getDetailedPermissionStatus();
+      
+      if (!permissionStatus.hasPermission) {
+        if (permissionStatus.isPermanentlyDenied) {
+          // 权限被永久拒绝，显示设置页面提示
+          _showPermissionDeniedDialog();
+          return;
+        } else if (permissionStatus.needsRequest) {
+          // 需要请求权限
+          final granted = await PermissionService.requestStoragePermissions();
+          if (!granted) {
+            _showSnackBar('需要存储权限来选择PDF文件');
+            return;
+          }
+        }
+      }
+
       final filePath = await PDFService.pickPDFFile();
       
       if (filePath != null) {
@@ -269,6 +288,32 @@ class _BookShelfScreenState extends State<BookShelfScreen> {
   void _clearSearch() {
     _searchController.clear();
     _bookShelfService.clearSearch();
+  }
+
+  /// 显示权限被拒绝的对话框
+  void _showPermissionDeniedDialog() {
+    showDialog<void>(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('需要存储权限'),
+          content: Text(PermissionService.getPermissionRationaleMessage()),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () async {
+                Navigator.of(context).pop();
+                await PermissionService.openAppSettings();
+              },
+              child: const Text('去设置'),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   void _showSnackBar(String message) {

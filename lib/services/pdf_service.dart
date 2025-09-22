@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/pdf_document.dart';
+import 'permission_service.dart';
 
 /// PDF服务异常类
 class PDFServiceException implements Exception {
@@ -33,6 +34,17 @@ class PDFService {
   /// 返回选中的PDF文件路径，如果用户取消选择则返回null
   static Future<String?> pickPDFFile() async {
     try {
+      // 在Android上检查权限
+      if (Platform.isAndroid) {
+        final hasPermission = await PermissionService.hasStoragePermissions();
+        if (!hasPermission) {
+          final granted = await PermissionService.requestStoragePermissions();
+          if (!granted) {
+            throw const PDFServiceException('需要存储权限来选择PDF文件');
+          }
+        }
+      }
+
       FilePickerResult? result = await FilePicker.platform.pickFiles(
         type: FileType.custom,
         allowedExtensions: ['pdf'],
